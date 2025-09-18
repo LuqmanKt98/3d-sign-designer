@@ -472,7 +472,7 @@ function ChannelLettersAndPanel({
         };
 
         const baseWidth = lineLocalWidths[i] || size * 4;
-        const effectiveTextWidth = baseWidth * widthScale * (pose.scale || 1);
+        const effectiveTextWidth = baseWidth * widthScale;
         const rwPad = (perLinePadUnits?.[i] ?? racewayPadUnits ?? 0) * 2;
         const rwWidth = Math.max(effectiveTextWidth + rwPad, size * 2);
         const rwHeight = Math.max(
@@ -486,7 +486,7 @@ function ChannelLettersAndPanel({
               <mesh position={[0, racewayYOffsetUnits, racewayZ]}>
                 <boxGeometry
                   args={[
-                    rwWidth / (pose.scale || 1),
+                    rwWidth,
                     rwHeight,
                     Math.max(racewayDepth, 0.2),
                   ]}
@@ -618,7 +618,7 @@ function HaloOnly({
           >
             <group scale={[widthScale, 1, 1]}>
               <group
-                position={[haloOffsetX, haloOffsetY, defaultZ]}
+                position={[0, 0, defaultZ]}
                 scale={[haloScaleBase, haloScaleBase, 1]}
               >
                 <Text3D
@@ -1117,9 +1117,16 @@ export default function App() {
 
     const screenToWorld = (pt) => {
       const planeW = 120;
-      const sx = (pt.x / dispW) * planeW - planeW / 2;
       const planeH = planeW * (S.imgH / S.imgW);
-      const sy = -(pt.y / dispH) * planeH + planeH / 2;
+      
+      // Convert screen coordinates to normalized plane coordinates
+      const normalizedX = pt.x / dispW;
+      const normalizedY = pt.y / dispH;
+      
+      // Convert to plane local coordinates accounting for plane dimensions
+      const sx = (normalizedX - 0.5) * planeW;
+      const sy = (0.5 - normalizedY) * planeH;
+      
       return { x: sx, y: sy };
     };
 
