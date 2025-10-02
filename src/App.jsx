@@ -137,7 +137,7 @@ function useHistory(S, setS) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [S]);
+  }, [undo, redo]);
 
   return { undo, redo, canUndo: past.length > 0, canRedo: future.length > 0 };
 }
@@ -335,22 +335,32 @@ function ChannelLettersAndPanel({
   const firstY = ((lines.length - 1) * step) / 2;
 
   const textMeshRefs = useRef([]);
+  const racewayMeshRefs = useRef([]);
+  
+  // Robust width measuring (after geometry update + center)
   const [lineLocalWidths, setLineLocalWidths] = useState([]);
+  const widthsRef = useRef([]);
+  const countRef = useRef(0);
 
-  useLayoutEffect(() => {
-    (textMeshRefs.current || []).forEach((mesh) => {
-      if (!mesh?.geometry) return;
-      mesh.geometry.computeBoundingBox?.();
-      //mesh.geometry.center?.(); // always re-center text
-    });
-    const widths = (textMeshRefs.current || []).map((mesh) => {
-      if (!mesh?.geometry) return 0;
-      mesh.geometry.computeBoundingBox();
-      const bb = mesh.geometry.boundingBox;
-      return Math.max(0.001, bb.max.x - bb.min.x);
-    });
-    setLineLocalWidths(widths);
-  }, [text, size, lineSpacing, fontUrl, perLineWidthScale, linePoses]);
+  useEffect(() => {
+    widthsRef.current = [];
+    countRef.current = 0;
+  }, [text, fontUrl, perLineWidthScale]);
+  
+  useEffect(() => {
+    if (countRef.current === lines.length && lines.length > 0) {
+      setLineLocalWidths(widthsRef.current.slice());
+    }
+  }, [countRef.current, lines.length]);
+
+  const handleUpdateWidth = (i, g) => {
+    if (!g) return;
+    g.computeBoundingBox?.();
+    const bb = g.boundingBox;
+    const width = Math.max(1e-3, (bb?.max.x ?? 0) - (bb?.min.x ?? 0));
+    widthsRef.current[i] = width;
+    countRef.current += 1;
+  };
 
   const HiddenTextOnly = () => (
     <group ref={textOnlyRef} visible={false}>
@@ -366,16 +376,8 @@ function ChannelLettersAndPanel({
               bevelSize={Math.min(0.02 * size, 2)}
               bevelThickness={Math.min(0.02 * depth, 1)}
               curveSegments={8}
-              onUpdate={(self) => {
-                self.geometry.computeBoundingBox();
-                const box = self.geometry.boundingBox;
-                if (box) {
-                  const centerX = (box.max.x + box.min.x) / 2;
-                  const centerY = (box.max.y + box.min.y) / 2;
-                  const centerZ = (box.max.z + box.min.z) / 2;
-                  self.geometry.translate(-centerX, -centerY, -centerZ);
-                }
-              }}
+              anchorX="center"
+              anchorY="middle"
             >
               {line}
               <meshBasicMaterial attach="material-0" color={faceColor} />
@@ -471,30 +473,30 @@ function ChannelLettersAndPanel({
           },
         };
 
-        const baseWidth = lineLocalWidths[i] || size * 4;
-        const effectiveTextWidth = baseWidth * widthScale;
+        // Compute raceway width in the SAME local space as text:
+        const baseW = lineLocalWidths[i] || 0;
         const rwPad = (perLinePadUnits?.[i] ?? racewayPadUnits ?? 0) * 2;
-        const rwWidth = Math.max(effectiveTextWidth + rwPad, size * 2);
         const rwHeight = Math.max(
           perLineHeightUnits?.[i] ?? racewayHeightUnits ?? size * 0.35,
           size * 0.12
         );
+        // Scale measured width proportionally with size, or estimate
+        const estimatedWidth = line.length * size * 0.6;
+        const actualWidth = baseW > 0 ? baseW : estimatedWidth;
+        const rwWidthLocal = Math.max(actualWidth + rwPad, size * 2);
 
         const WidthScaled = (
           <group scale={[widthScale, 1, 1]}>
+            {/* Raceway in the same local group as text => stays centered */}
             {showRaceway && perLineRaceway && (
-              <mesh position={[0, racewayYOffsetUnits, racewayZ]}>
+              <mesh position={[0, racewayYOffsetUnits || 0, racewayZ]}>
                 <boxGeometry
-                  args={[
-                    rwWidth,
-                    rwHeight,
-                    Math.max(racewayDepth, 0.2),
-                  ]}
+                  args={[rwWidthLocal, rwHeight, Math.max(racewayDepth, 0.5)]}
                 />
                 <meshBasicMaterial color={racewayColor} />
               </mesh>
             )}
-
+            
             {showLetters && (
               <Text3D
                 ref={(el) => (textMeshRefs.current[i] = el)}
@@ -505,14 +507,17 @@ function ChannelLettersAndPanel({
                 bevelSize={Math.min(0.02 * size, 2)}
                 bevelThickness={Math.min(0.02 * depth, 1)}
                 curveSegments={8}
+                anchorX="center"
+                anchorY="middle"
                 onUpdate={(self) => {
-                  self.geometry.computeBoundingBox();
-                  const box = self.geometry.boundingBox;
+                  handleUpdateWidth(i, self);
+                  self.geometry?.computeBoundingBox?.();
+                  const box = self.geometry?.boundingBox;
                   if (box) {
-                    const centerX = (box.max.x + box.min.x) / 2;
-                    const centerY = (box.max.y + box.min.y) / 2;
-                    const centerZ = (box.max.z + box.min.z) / 2;
-                    self.geometry.translate(-centerX, -centerY, -centerZ);
+                    const cx = (box.max.x + box.min.x) / 2;
+                    const cy = (box.max.y + box.min.y) / 2;
+                    const cz = (box.max.z + box.min.z) / 2;
+                    self.geometry.translate(-cx, -cy, -cz);
                   }
                 }}
               >
@@ -526,7 +531,7 @@ function ChannelLettersAndPanel({
 
         if (!enableLineSizers || activeTool !== 'lines') {
           return (
-            <group key={`row-${i}`} {...groupProps}>
+            <group key={`row-${i}-${size}`} {...groupProps}>
               {WidthScaled}
             </group>
           );
@@ -534,7 +539,7 @@ function ChannelLettersAndPanel({
 
         return (
           <TransformControls
-            key={`row-${i}`}
+            key={`row-${i}-${size}`}
             enabled={i === activeLineIndex}
             mode={transformMode}
             showX
@@ -824,7 +829,7 @@ function FourPointFitOverlay({
 
 /* ───────────────────────── Nudge Pad ───────────────────────── */
 
-function NudgePad({ label, onNudge, step, setStep }) {
+function NudgePad({ label, onNudge, step, setStep, onCenter }) {
   return (
     <div className="border border-neutral-800 rounded-lg p-3 space-y-2">
       <div className="text-sm font-medium">{label}</div>
@@ -857,8 +862,9 @@ function NudgePad({ label, onNudge, step, setStep }) {
           ←
         </button>
         <button
-          onClick={() => onNudge(0, 0)}
+          onClick={() => onCenter ? onCenter() : onNudge(0, 0)}
           className="p-2 rounded bg-neutral-800 border border-neutral-700"
+          title="Center"
         >
           •
         </button>
@@ -983,7 +989,7 @@ export default function App() {
         perLineWidthScale: plw,
       };
     });
-  }, [uiLines.length, S.racewayPadUnits, S.size]);
+  }, [uiLines.length, S.racewayPadUnits]);
 
   useEffect(() => {
     const n = uiLines.length;
@@ -1123,11 +1129,19 @@ export default function App() {
       const normalizedX = pt.x / dispW;
       const normalizedY = pt.y / dispH;
       
-      // Convert to plane local coordinates accounting for plane dimensions
+      // Convert to plane local coordinates accounting for plane dimensions and tilt
       const sx = (normalizedX - 0.5) * planeW;
       const sy = (0.5 - normalizedY) * planeH;
       
-      return { x: sx, y: sy };
+      // Apply inverse tilt transformation to get correct world coordinates
+      const tiltXRad = rad(S.bldTiltX);
+      const tiltYRad = rad(S.bldTiltY);
+      
+      // Simple inverse tilt correction
+      const correctedX = sx / Math.cos(tiltYRad);
+      const correctedY = sy / Math.cos(tiltXRad);
+      
+      return { x: correctedX, y: correctedY };
     };
 
     const tgt = [tl, tr, br, bl].map(screenToWorld);
@@ -1236,6 +1250,7 @@ export default function App() {
                 signTY: +(S.signTY + dy).toFixed(2),
               })
             }
+            onCenter={() => set({ signTX: 0, signTY: 0 })}
           />
           <NudgePad
             label={`Nudge Line ${S.activeLineIndex + 1}`}
@@ -1252,6 +1267,11 @@ export default function App() {
               clampToBounds(np, lettersBounds);
               const arr = [...S.linePoses];
               arr[S.activeLineIndex] = np;
+              set({ linePoses: arr });
+            }}
+            onCenter={() => {
+              const arr = [...S.linePoses];
+              arr[S.activeLineIndex] = { x: 0, y: 0, rot: 0, scale: 1 };
               set({ linePoses: arr });
             }}
           />
@@ -1271,6 +1291,7 @@ export default function App() {
               );
               set({ logoTransform: t });
             }}
+            onCenter={() => set({ logoTransform: { x: 0, y: 0, rot: 0, scl: 1 } })}
           />
         </div>
 
